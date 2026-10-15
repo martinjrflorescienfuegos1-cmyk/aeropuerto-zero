@@ -1,0 +1,27 @@
+{
+  "vuelos": [
+    {
+      "id": "VUE-001",
+      "destino": "Tokio (NRT) - Japón",
+      "origen": "Ciudad de México (MEX)",
+      "salida": "2026-10-14T08:00:00Z",
+      "duracionHoras": 14.5,
+      "llegadaEstimada": "2026-10-14T22:30:00Z",
+      "estado": "En Vuelo",
+      "puerta": "Gate A4",
+      "avion": "Boeing 777-300ER"
+    },
+    {
+      "id": "VUE-002",
+      "destino": "Madrid (MAD) - España",
+      "origen": "Ciudad de México (MEX)",
+      "salida": "2026-10-14T20:00:00Z",
+      "duracionHoras": 10,
+      "llegadaEstimada": "2026-10-15T06:00:00Z",
+      "estado": "Abordando",
+      "puerta": "Gate B2",
+      "avion": "Airbus A350"
+    }
+  ],
+  "boletos": []
+}
