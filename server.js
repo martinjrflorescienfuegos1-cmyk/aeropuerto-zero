@@ -1,123 +1,107 @@
 const express = require('express');
-const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const DB_FILE = path.join(__dirname, 'database.json');
+const DB_PATH = path.join(__dirname, 'database.json');
 
 app.use(cors());
 app.use(express.json());
 
-// Inicializar la base de datos en archivo si no existe
-if (!fs.existsSync(DB_FILE)) {
-    const initialData = {
-        vuelos: [
-            {
-                id: "VUE-001",
-                destino: "Tokio (NRT) - Japón",
-                origen: "Ciudad de México (MEX)",
-                salida: "2026-10-14T08:00:00Z",
-                duracionHoras: 14.5,
-                llegadaEstimada: "2026-10-14T22:30:00Z",
-                estado: "En Vuelo",
-                puerta: "Gate A4",
-                avion: "Boeing 777-300ER"
-            },
-            {
-                id: "VUE-002",
-                destino: "Madrid (MAD) - España",
-                origen: "Ciudad de México (MEX)",
-                salida: "2026-10-14T20:00:00Z",
-                duracionHoras: 10.0,
-                llegadaEstimada: "2026-10-15T06:00:00Z",
-                estado: "Abordando",
-                puerta: "Gate B2",
-                avion: "Airbus A350"
-            }
-        ],
-        boletos: []
-    };
-    fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2));
-}
-
-// Funciones auxiliares para leer y escribir en disco
-function getData() {
-    const data = fs.readFileSync(DB_FILE, 'utf8');
+// Función auxiliar para leer la base de datos
+function leerDB() {
+    const data = fs.readFileSync(DB_PATH, 'utf8');
     return JSON.parse(data);
 }
 
-function saveData(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+// Función auxiliar para guardar en la base de datos
+function guardarDB(data) {
+    fs.writeFileSync(DB_PATH, JSON.stringify(data, null, 2));
 }
 
-// 1. Obtener todos los vuelos (Tablero FIDS)
+// --- RUTAS DE LA API ---
+
+// 1. Obtener la lista de vuelos
 app.get('/api/vuelos', (req, res) => {
-    const db = getData();
-    res.json({ success: true, total: db.vuelos.length, vuelos: db.vuelos });
-});
-
-// 2. Programar un nuevo vuelo (Torre de Control)
-app.post('/api/vuelos', (req, res) => {
-    const db = getData();
-    const { id, destino, origen, salida, duracionHoras, puerta, avion } = req.body;
-    
-    const fechaSalida = new Date(salida);
-    const llegada = new Date(fechaSalida.getTime() + duracionHoras * 60 * 60 * 1000);
-
-    const nuevoVuelo = {
-        id: id || `VUE-00${db.vuelos.length + 1}`,
-        destino,
-        origen: origen || "Ciudad de México (MEX)",
-        salida,
-        duracionHoras,
-        llegadaEstimada: llegada.toISOString(),
-        estado: "Programado",
-        puerta: puerta || "Gate C1",
-        avion: avion || "Boeing 787 Dreamliner"
-    };
-
-    db.vuelos.push(nuevoVuelo);
-    saveData(db);
-    res.status(201).json({ success: true, mensaje: "Vuelo programado con éxito", vuelo: nuevoVuelo });
-});
-
-// 3. Generar Boleto / Check-in con código QR único
-app.post('/api/boletos', (req, res) => {
-    const db = getData();
-    const { pasajero, vueloId, asiento } = req.body;
-
-    const vuelo = db.vuelos.find(v => v.id === vueloId);
-    if (!vuelo) {
-        return res.status(404).json({ success: false, mensaje: "Vuelo no encontrado en el sistema" });
+    try {
+        const db = leerDB();
+        res.json({ success: true, vuelos: db.vuelos });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al obtener vuelos" });
     }
-
-    const codigoQR = `AEZ-QR-${Math.floor(100000 + Math.random() * 900000)}`;
-
-    const nuevoBoleto = {
-        idBoleto: `BOL-${db.boletos.length + 1}`,
-        pasajero: pasajero || "Pasajero Anónimo",
-        vueloId: vuelo.id,
-        destino: vuelo.destino,
-        salida: vuelo.salida,
-        puerta: vuelo.puerta,
-        asiento: asiento || "12A",
-        codigoQR,
-        estadoAbordaje: "No Abordado"
-    };
-
-    db.boletos.push(nuevoBoleto);
-    saveData(db);
-    res.status(201).json({ success: true, mensaje: "Pase de abordar generado con éxito", boleto: nuevoBoleto });
 });
 
-// 4. Consultar boletos emitidos
-app.get('/api/boletos', (req, res) => {
-    const db = getData();
-    res.json({ success: true, total: db.boletos.length, boletos: db.boletos });
+// 2. Obtener los asientos ocupados de un vuelo específico
+app.get('/api/vuelos/:id/asientos', (req, res) => {
+    try {
+        const db = leerDB();
+        const vuelo = db.vuelos.find(v => v.id === req.params.id);
+        
+        if (!vuelo) {
+            return res.status(404).json({ success: false, error: "Vuelo no encontrado" });
+        }
+
+        res.json({
+            success: true,
+            vueloId: vuelo.id,
+            asientosOcupados: vuelo.asientosOcupados || []
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, error: "Error al obtener asientos" });
+    }
+});
+
+// 3. Procesar y guardar una nueva reserva de asientos
+app.post('/api/vuelos/reservar', (req, res) => {
+    try {
+        const { vueloId, asientos, pasajeros } = req.body;
+        const db = leerDB();
+
+        const vueloIndex = db.vuelos.findIndex(v => v.id === vueloId);
+        
+        // Si no se encuentra el vuelo exacto, elegimos el primero por defecto
+        const idx = vueloIndex !== -1 ? vueloIndex : 0;
+        
+        if (!db.vuelos[idx].asientosOcupados) {
+            db.vuelos[idx].asientosOcupados = [];
+        }
+
+        // Agregar los nuevos asientos a la lista de ocupados
+        if (asientos && Array.isArray(asientos)) {
+            asientos.forEach(asiento => {
+                if (!db.vuelos[idx].asientosOcupados.includes(asiento)) {
+                    db.vuelos[idx].asientosOcupados.push(asiento);
+                }
+            });
+        }
+
+        // Registrar el boleto
+        const nuevoBoleto = {
+            idReserva: `RES-${Date.now()}`,
+            vueloId: db.vuelos[idx].id,
+            asientos: asientos,
+            pasajeros: pasajeros || asientos.length,
+            fechaReserva: new Date().toISOString()
+        };
+
+        db.boletos.push(nuevoBoleto);
+        guardarDB(db);
+
+        console.log(`[RESERVA EXITOSA] ${JSON.stringify(nuevoBoleto)}`);
+
+        res.json({
+            success: true,
+            mensaje: "¡Reserva confirmada con éxito!",
+            reserva: nuevoBoleto
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ success: false, error: "Error al guardar la reserva" });
+    }
 });
 
 app.listen(PORT, () => {
-    console.log(`✈️ Torre de Control (Persistente) operando en http://localhost:${PORT}`);
+    console.log(`Servidor "Aeropuerto Zero" corriendo en el puerto ${PORT}`);
 });
