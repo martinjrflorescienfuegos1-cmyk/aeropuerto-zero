@@ -9,7 +9,8 @@
       "llegadaEstimada": "2026-10-14T22:30:00Z",
       "estado": "En Vuelo",
       "puerta": "Gate A4",
-      "avion": "Boeing 777-300ER"
+      "avion": "Boeing 777-300ER",
+      "asientosOcupados": ["5B", "12D"]
     },
     {
       "id": "VUE-002",
@@ -20,7 +21,8 @@
       "llegadaEstimada": "2026-10-15T06:00:00Z",
       "estado": "Abordando",
       "puerta": "Gate B2",
-      "avion": "Airbus A350"
+      "avion": "Airbus A350",
+      "asientosOcupados": []
     }
   ],
   "boletos": []
