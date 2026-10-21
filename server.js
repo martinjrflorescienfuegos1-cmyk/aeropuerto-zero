@@ -1,16 +1,63 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const nodemailer = require('nodemailer');
 const app = express();
 
 app.use(express.json());
 
 const DB_FILE = path.join(__dirname, 'database.json');
 
+// Configuración del servicio de correo SMTP
+const transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+        user: process.env.EMAIL_USER || '',
+        pass: process.env.EMAIL_PASS || ''
+    }
+});
+
+// Función para enviar correo real
+async function enviarCorreoOTP(destino, codigo, asunto = "Código de Verificación - Aeropuerto Zero") {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.log(`[SMTP SIMULADO] Correo para ${destino}: Código OTP = ${codigo}`);
+        return false;
+    }
+
+    const mailOptions = {
+        from: `"Aeropuerto Zero" <${process.env.EMAIL_USER}>`,
+        to: destino,
+        subject: asunto,
+        html: `
+            <div style="font-family: Arial, sans-serif; background-color: #070E23; color: #ffffff; padding: 30px; border-radius: 10px; max-width: 500px; margin: auto;">
+                <h2 style="color: #00B4D8; text-align: center;">AEROPUERTO ZERO</h2>
+                <hr style="border-color: #141E38;">
+                <p>Hola,</p>
+                <p>Tu código de verificación para Aeropuerto Zero es:</p>
+                <div style="background-color: #141E38; color: #00B4D8; font-size: 28px; font-weight: bold; text-align: center; padding: 15px; border-radius: 8px; letter-spacing: 5px;">
+                    ${codigo}
+                </div>
+                <p style="font-size: 12px; color: #888888; margin-top: 20px;">Si no solicitaste este código, puedes ignorar este mensaje.</p>
+            </div>
+        `
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`[SMTP EXITOSO] Correo enviado a ${destino}`);
+        return true;
+    } catch (error) {
+        console.error(`[SMTP ERROR] No se pudo enviar el correo a ${destino}:`, error);
+        return false;
+    }
+}
+
 function leerBD() {
     try {
         if (!fs.existsSync(DB_FILE)) {
-            return { perfiles: {}, boletos: [], otps: {} };
+            const inicial = { perfiles: {}, boletos: [], otps: {} };
+            fs.writeFileSync(DB_FILE, JSON.stringify(inicial, null, 2), 'utf8');
+            return inicial;
         }
         const data = fs.readFileSync(DB_FILE, 'utf8');
         return JSON.parse(data);
@@ -27,12 +74,11 @@ function guardarBD(data) {
     }
 }
 
-// 1. Registro con Contraseña y Código OTP
-app.post('/api/auth/register', (req, res) => {
+// 1. Registro de usuario con guardado permanente
+app.post('/api/auth/register', async (req, res) => {
     const { nombreCompleto, correo, pasaporte, password } = req.body;
     const db = leerBD();
 
-    // Verificar si el correo ya existe
     const existe = Object.values(db.perfiles).find(p => p.correo === correo);
     if (existe) {
         return res.status(400).json({ status: "ERROR", mensaje: "El correo ya está registrado" });
@@ -46,7 +92,7 @@ app.post('/api/auth/register', (req, res) => {
         nombreCompleto,
         correo,
         pasaporte,
-        password, // En producción se usa bcrypt
+        password,
         verificado: false
     };
 
@@ -56,22 +102,22 @@ app.post('/api/auth/register', (req, res) => {
 
     guardarBD(db);
 
-    console.log(`[AUTH] Usuario registrado: ${correo}. Código OTP enviado: ${otpCodigo}`);
+    await enviarCorreoOTP(correo, otpCodigo, "Activa tu Cuenta - Aeropuerto Zero");
+
     res.json({
         status: "OK",
-        mensaje: "Código de verificación enviado al correo",
+        mensaje: "Código enviado a tu correo electrónico",
         usuarioId: userId,
-        otpSimulado: otpCodigo // Se retorna para fácil prueba en la app
+        otpSimulado: otpCodigo
     });
 });
 
-// 2. Verificación de Código OTP
+// 2. Verificación de OTP
 app.post('/api/auth/verify-otp', (req, res) => {
     const { correo, otp } = req.body;
     const db = leerBD();
 
     if (db.otps && db.otps[correo] === otp) {
-        // Marcar usuario como verificado
         const userKey = Object.keys(db.perfiles).find(k => db.perfiles[k].correo === correo);
         if (userKey) {
             db.perfiles[userKey].verificado = true;
@@ -81,10 +127,52 @@ app.post('/api/auth/verify-otp', (req, res) => {
         }
     }
 
-    res.status(400).json({ status: "ERROR", mensaje: "Código de verificación incorrecto" });
+    res.status(400).json({ status: "ERROR", mensaje: "Código de verificación incorrecto o expirado" });
 });
 
-// 3. Iniciar Sesión con Correo y Contraseña
+// 3. Recuperar contraseña (Olvidé mi contraseña)
+app.post('/api/auth/forgot-password', async (req, res) => {
+    const { correo } = req.body;
+    const db = leerBD();
+
+    const usuario = Object.values(db.perfiles).find(p => p.correo === correo);
+    if (!usuario) {
+        return res.status(404).json({ status: "ERROR", mensaje: "El correo no se encuentra registrado" });
+    }
+
+    const otpCodigo = Math.floor(100000 + Math.random() * 900000).toString();
+    if (!db.otps) db.otps = {};
+    db.otps[correo] = otpCodigo;
+    guardarBD(db);
+
+    await enviarCorreoOTP(correo, otpCodigo, "Recuperación de Contraseña - Aeropuerto Zero");
+
+    res.json({
+        status: "OK",
+        mensaje: "Código de recuperación enviado a tu correo",
+        otpSimulado: otpCodigo
+    });
+});
+
+// 4. Restablecer contraseña con OTP
+app.post('/api/auth/reset-password', (req, res) => {
+    const { correo, otp, nuevaPassword } = req.body;
+    const db = leerBD();
+
+    if (db.otps && db.otps[correo] === otp) {
+        const userKey = Object.keys(db.perfiles).find(k => db.perfiles[k].correo === correo);
+        if (userKey) {
+            db.perfiles[userKey].password = nuevaPassword;
+            delete db.otps[correo];
+            guardarBD(db);
+            return res.json({ status: "OK", mensaje: "Contraseña actualizada correctamente" });
+        }
+    }
+
+    res.status(400).json({ status: "ERROR", mensaje: "Código incorrecto" });
+});
+
+// 5. Iniciar Sesión
 app.post('/api/auth/login', (req, res) => {
     const { correo, password } = req.body;
     const db = leerBD();
@@ -92,14 +180,13 @@ app.post('/api/auth/login', (req, res) => {
     const usuario = Object.values(db.perfiles).find(p => p.correo === correo && p.password === password);
 
     if (usuario) {
-        console.log(`[AUTH] Inicio de sesión exitoso: ${correo}`);
         res.json({ status: "OK", perfil: usuario });
     } else {
         res.status(401).json({ status: "ERROR", mensaje: "Correo o contraseña incorrectos" });
     }
 });
 
-// 4. Vuelos, Asientos, Reservas y Validación QR
+// 6. Consultas de Vuelos, Asientos y Reserva con Guardado Persistente
 app.get('/api/vuelos', (req, res) => {
     res.json({
         status: "OK",
@@ -127,24 +214,6 @@ app.get('/api/vuelos/:id/asientos', (req, res) => {
     res.json({ status: "OK", vueloId: req.params.id, mapaAsientos: asientos });
 });
 
-app.post('/api/perfil', (req, res) => {
-    const perfil = req.body;
-    const db = leerBD();
-    db.perfiles[perfil.id] = perfil;
-    guardarBD(db);
-    res.json({ status: "OK", mensaje: "Perfil sincronizado correctamente" });
-});
-
-app.get('/api/perfil/:id', (req, res) => {
-    const db = leerBD();
-    const perfil = db.perfiles[req.params.id];
-    if (perfil) {
-        res.json(perfil);
-    } else {
-        res.status(404).json({ status: "NOT_FOUND", mensaje: "Perfil no encontrado" });
-    }
-});
-
 app.post('/api/vuelos/reservar', (req, res) => {
     const { boletoDetalle } = req.body;
     const db = leerBD();
@@ -154,7 +223,7 @@ app.post('/api/vuelos/reservar', (req, res) => {
         guardarBD(db);
     }
 
-    res.json({ status: "OK", mensaje: "Boleto guardado y sincronizado" });
+    res.json({ status: "OK", mensaje: "Boleto guardado en base de datos de Render" });
 });
 
 app.get('/api/boletos/usuario/:usuarioId', (req, res) => {
@@ -205,4 +274,4 @@ app.get('/api/boletos/validar/:codigoReserva', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor Aeropuerto Zero activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor Aeropuerto Zero corriendo en puerto ${PORT}`));
